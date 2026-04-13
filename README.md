@@ -35,30 +35,12 @@ This tool bridges those gaps by aggregating every available signal into a single
 
 ## How It Works
 
-The audit runs as **parallel GitHub Actions jobs**, each collecting data independently, then a final job merges everything into a consolidated report.
+Published as a **GitHub Marketplace Action** powered by `actions/github-script@v9` — no bash scripts, no shell dependencies. All logic runs as inline JavaScript via Octokit.
 
-```
-┌─────────────────────┐  ┌────────────────────┐  ┌─────────────────────┐  ┌───────────────────────┐
-│ 📦 Fetch Repos &    │  │ 🔑 SAML SSO        │  │ 📋 Audit Log        │  │ 🔍 Workflow Secret    │
-│    Members          │  │    Credentials     │  │    Events           │  │    Scanner            │
-└────────┬────────────┘  └────────┬───────────┘  └────────┬────────────┘  └───────────┬───────────┘
-         │                        │                       │                           │
-         └────────────────────────┴───────────┬───────────┴───────────────────────────┘
-                                              │
-                                   ┌──────────▼──────────┐
-                                   │ 📊 Generate Report  │
-                                   │    & Job Summary    │
-                                   └─────────────────────┘
-```
+The action runs as a **composite action** with 2 steps:
 
-**Parallel jobs:**
-1. **Fetch Repos & Members** — GraphQL queries for all org repos and members (for cross-referencing roles).
-2. **SAML SSO Credentials** — Lists every PAT and SSH key authorized for SAML SSO.
-3. **Audit Log Events** — PAT lifecycle events, token-authenticated access, and actor summary.
-4. **Workflow Secret Scanner** — Scans all org workflow files for custom secret references (non-`GITHUB_TOKEN`).
-
-**Final job:**
-5. **Generate Report** — Merges all data, builds a per-user PAT activity matrix, generates the Markdown report and GitHub Actions job summary.
+1. **Collect Data** — Fetches repos, members, SAML SSO credentials, audit log events, and scans org workflows for custom secret usage. All data written as JSON to `./reports/`.
+2. **Generate Report** — Builds a per-user PAT activity matrix, generates a Markdown report, and writes a rich job summary to the Actions UI.
 
 > **Key design choice:** The report only shows **users with PAT activity** — not all org members. A user appears only if they show up in SAML SSO credentials, audit log PAT events, or token-authenticated access events.
 
@@ -66,29 +48,57 @@ The audit runs as **parallel GitHub Actions jobs**, each collecting data indepen
 
 ## Usage
 
-### Run as a GitHub Action
+### From the GitHub Marketplace
 
-This repository already includes a workflow at `.github/workflows/pat-audit.yml`. It:
-
-- Runs **4 parallel data collection jobs** then a final report job.
-- Runs weekly on Mondays at 08:00 UTC (and supports `workflow_dispatch` with optional org name and lookback overrides).
-- Reads the PAT from `secrets.ORG_LEVEL_PAT` and the org name from `vars.GITHUB_ORG_NAME` (falls back to `github.repository_owner` automatically).
-- Produces a **job summary** with tables directly in the Actions UI.
-- Uploads the full `reports/` directory as an artifact retained for 90 days.
-
-To trigger manually: **Actions → PAT Audit → Run workflow**.
+Use this action in any repository:
 
 ```yaml
-# Trigger manually or on schedule — 4 parallel jobs + 1 report job
-# See .github/workflows/pat-audit.yml for the full workflow
+name: PAT Audit
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
-  fetch-org-data:      # 📦 Repos & Members (GraphQL)
-  saml-credentials:    # 🔑 SAML SSO Credential Authorizations
-  audit-log:           # 📋 PAT Events + Token Auth + Actor Summary
-  workflow-scanner:    # 🔍 Scan Workflows for Custom Secrets
-  generate-report:     # 📊 Merge data, build per-user matrix, report & summary
-    needs: [fetch-org-data, saml-credentials, audit-log, workflow-scanner]
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: jackgkafaty/GitHub_PAT_AUDIT@v1
+        with:
+          org-pat: ${{ secrets.ORG_LEVEL_PAT }}
+          # org-name: my-org        # optional, defaults to repository owner
+          # lookback-days: '30'     # optional, defaults to 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pat-audit-report
+          path: reports/
+          retention-days: 90
 ```
+
+### Action Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `org-pat` | **Yes** | — | Classic PAT with `admin:org`, `read:audit_log`, `repo` scopes |
+| `org-name` | No | Repository owner | GitHub organization slug |
+| `lookback-days` | No | `30` | Days to look back in the audit log |
+
+### Action Outputs
+
+| Output | Description |
+|---|---|
+| `pat-active-users` | Number of users with PAT activity detected |
+| `report-path` | Path to the reports directory (`reports`) |
+
+### Run from This Repository
+
+This repository includes a workflow at `.github/workflows/pat-audit.yml` that uses the action locally (`uses: ./`). It runs weekly and supports manual dispatch.
+
+To trigger: **Actions → PAT Audit → Run workflow**.
 
 ### Run Locally
 
@@ -275,21 +285,17 @@ After execution, the `reports/` directory contains:
 
 ```
 PatUsage/
+├── action.yml                     # Composite action (marketplace)
 ├── .github/
 │   └── workflows/
-│       └── pat-audit.yml          # GitHub Actions workflow (parallel jobs)
+│       └── pat-audit.yml          # Workflow using the composite action
 ├── README.md                      # This file
-├── FEASIBILITY-REVIEW.md          # API feasibility analysis and setup guide
-├── scripts/
-│   ├── lib.sh                     # Shared functions (auth, REST, GraphQL, pagination)
-│   ├── pat-audit.sh               # Local runner (runs all steps sequentially)
-│   ├── fetch-org-data.sh          # Step: fetch repos & members
-│   ├── saml-credentials.sh        # Step: SAML SSO credential authorizations
-│   ├── audit-log.sh               # Step: audit log PAT & token events
-│   ├── workflow-scanner.sh        # Step: scan workflows for custom secrets
-│   └── generate-report.sh         # Step: merge data, build report & summary
+├── FEASIBILITY-REVIEW.md          # API feasibility analysis
+├── scripts/                       # Bash scripts for local use
+│   ├── lib.sh                     # Shared functions
+│   └── pat-audit.sh               # Local runner (sequential)
 └── reports/
-    └── .gitkeep                   # Placeholder (reports generated at runtime)
+    └── .gitkeep                   # Placeholder (generated at runtime)
 ```
 
 ---

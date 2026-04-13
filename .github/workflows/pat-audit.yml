@@ -19,121 +19,25 @@ permissions:
   contents: read
 
 env:
-  GITHUB_API_VERSION: "2026-03-10"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  # ---------------------------------------------------------------
-  # Parallel data collection jobs
-  # ---------------------------------------------------------------
-  fetch-org-data:
-    name: 📦 Fetch Repos & Members
+  pat-audit:
+    name: "\U0001F510 PAT Audit"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Fetch org repositories and members
-        env:
-          ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
-        run: |
-          chmod +x ./scripts/fetch-org-data.sh
-          bash ./scripts/fetch-org-data.sh
-      - uses: actions/upload-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run PAT Audit
+        uses: ./
         with:
-          name: data-org
-          path: |
-            reports/repositories.json
-            reports/members.json
-          retention-days: 1
+          org-pat: ${{ secrets.ORG_LEVEL_PAT }}
+          org-name: ${{ inputs.org_name || '' }}
+          lookback-days: ${{ inputs.lookback_days || '30' }}
 
-  saml-credentials:
-    name: 🔑 SAML SSO Credentials
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch SAML SSO credential authorizations
-        env:
-          ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
-        run: |
-          chmod +x ./scripts/saml-credentials.sh
-          bash ./scripts/saml-credentials.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: data-saml
-          path: reports/credential_authorizations.json
-          retention-days: 1
-
-  audit-log:
-    name: 📋 Audit Log Events
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Query audit log for PAT and token events
-        env:
-          ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
-          LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
-        run: |
-          chmod +x ./scripts/audit-log.sh
-          bash ./scripts/audit-log.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: data-audit
-          path: |
-            reports/audit_pat_events.json
-            reports/audit_token_access.json
-            reports/actor_summary.json
-          retention-days: 1
-
-  workflow-scanner:
-    name: 🔍 Workflow Secret Scanner
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Scan org workflows for custom secret usage
-        env:
-          ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
-        run: |
-          chmod +x ./scripts/workflow-scanner.sh
-          bash ./scripts/workflow-scanner.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: data-workflows
-          path: reports/workflow_secrets.json
-          retention-days: 1
-
-  # ---------------------------------------------------------------
-  # Final job: merge data, build report & summary
-  # ---------------------------------------------------------------
-  generate-report:
-    name: 📊 Generate Report & Summary
-    runs-on: ubuntu-latest
-    needs: [fetch-org-data, saml-credentials, audit-log, workflow-scanner]
-    if: always()
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all data artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: reports/
-          pattern: data-*
-          merge-multiple: true
-
-      - name: List collected data files
-        run: ls -la reports/
-
-      - name: Generate consolidated report and job summary
-        env:
-          ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
-          LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
-        run: |
-          chmod +x ./scripts/generate-report.sh
-          bash ./scripts/generate-report.sh
-
-      - name: Upload Final Report
+      - name: Upload Report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pat-audit-report-${{ github.run_id }}
