@@ -16,19 +16,86 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LOOKBACK_DATE="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
 
 # ---------------------------------------------------------------------------
-# Authenticated curl for REST
+# Rate limit aware REST call — checks remaining quota and waits if needed
 # ---------------------------------------------------------------------------
 gh_rest() {
   local method="${1}"
   local endpoint="${2}"
   shift 2
-  curl -fsSL \
+
+  local tmpfile
+  tmpfile="$(mktemp)"
+
+  local http_code
+  http_code="$(curl -sSL -o "${tmpfile}" -w "%{http_code}" \
     -X "${method}" \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${ORG_PAT}" \
     -H "X-GitHub-Api-Version: ${API_VERSION}" \
+    -D "${tmpfile}.hdr" \
     "$@" \
-    "${API_BASE}${endpoint}"
+    "${API_BASE}${endpoint}" 2>/dev/null || echo "000")"
+
+  # Check for rate limit (403 or 429)
+  if [[ "${http_code}" == "403" || "${http_code}" == "429" ]]; then
+    local reset_at
+    reset_at="$(grep -i '^x-ratelimit-reset:' "${tmpfile}.hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}')"
+    if [[ -n "${reset_at}" ]]; then
+      local now_epoch
+      now_epoch="$(date +%s)"
+      local wait_secs=$(( reset_at - now_epoch + 2 ))
+      if [[ ${wait_secs} -gt 0 && ${wait_secs} -lt 900 ]]; then
+        echo "::warning::Rate limited. Waiting ${wait_secs}s until reset..." >&2
+        sleep "${wait_secs}"
+        # Retry once
+        rm -f "${tmpfile}" "${tmpfile}.hdr"
+        curl -fsSL \
+          -X "${method}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${ORG_PAT}" \
+          -H "X-GitHub-Api-Version: ${API_VERSION}" \
+          "$@" \
+          "${API_BASE}${endpoint}"
+        return
+      fi
+    fi
+    echo "::error::Rate limited on ${endpoint}" >&2
+    cat "${tmpfile}"
+    rm -f "${tmpfile}" "${tmpfile}.hdr"
+    return 1
+  fi
+
+  cat "${tmpfile}"
+  rm -f "${tmpfile}" "${tmpfile}.hdr"
+}
+
+# ---------------------------------------------------------------------------
+# Check remaining rate limit and wait if low
+# ---------------------------------------------------------------------------
+check_rate_limit() {
+  local remaining
+  remaining="$(curl -sSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${ORG_PAT}" \
+    -H "X-GitHub-Api-Version: ${API_VERSION}" \
+    "${API_BASE}/rate_limit" 2>/dev/null | jq '.rate.remaining // 999')"
+
+  if [[ "${remaining}" -lt 50 ]]; then
+    local reset_at
+    reset_at="$(curl -sSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${ORG_PAT}" \
+      -H "X-GitHub-Api-Version: ${API_VERSION}" \
+      "${API_BASE}/rate_limit" 2>/dev/null | jq '.rate.reset // 0')"
+    local now_epoch
+    now_epoch="$(date +%s)"
+    local wait_secs=$(( reset_at - now_epoch + 2 ))
+    if [[ ${wait_secs} -gt 0 && ${wait_secs} -lt 900 ]]; then
+      echo "::warning::Only ${remaining} API calls remaining. Waiting ${wait_secs}s for reset..." >&2
+      sleep "${wait_secs}"
+    fi
+  fi
+  echo "${remaining}"
 }
 
 # ---------------------------------------------------------------------------
@@ -45,14 +112,14 @@ gh_graphql() {
 }
 
 # ---------------------------------------------------------------------------
-# Paginated REST fetch (collects all pages into a JSON array)
+# Paginated REST fetch with rate limit awareness
 # ---------------------------------------------------------------------------
 gh_rest_paginated() {
   local endpoint="${1}"
   local per_page="${2:-100}"
+  local max_pages="${3:-20}"
   local results="[]"
   local page=1
-  local max_pages=50
 
   while [[ $page -le $max_pages ]]; do
     local separator="?"
@@ -75,13 +142,16 @@ gh_rest_paginated() {
     if [[ "${count}" -lt "${per_page}" ]]; then
       break
     fi
+
+    # Brief pause between pages to avoid rate limiting
+    sleep 0.5
   done
 
   echo "${results}"
 }
 
 # ---------------------------------------------------------------------------
-# Validate PAT and org access
+# Validate PAT and org access (cached via file to avoid repeat API calls)
 # ---------------------------------------------------------------------------
 validate_auth() {
   if [[ -z "${ORG_PAT:-}" ]]; then
@@ -91,6 +161,15 @@ validate_auth() {
   if [[ -z "${ORG_NAME:-}" ]]; then
     echo "::error::ORG_NAME is not set."
     exit 1
+  fi
+
+  # Use cached auth if available (avoids burning 2 API calls per script)
+  if [[ -f "${REPORT_DIR}/_auth_cache.json" ]]; then
+    AUTH_USER="$(jq -r '.user' "${REPORT_DIR}/_auth_cache.json")"
+    ORG_ID="$(jq -r '.org_id' "${REPORT_DIR}/_auth_cache.json")"
+    echo "   Authenticated as: ${AUTH_USER} (cached)"
+    echo "   Organization: ${ORG_NAME} (ID: ${ORG_ID})"
+    return 0
   fi
 
   AUTH_CHECK="$(gh_rest GET "/user" 2>/dev/null || echo "{}")"
@@ -108,4 +187,7 @@ validate_auth() {
     exit 1
   fi
   echo "   Organization: ${ORG_NAME} (ID: ${ORG_ID})"
+
+  # Cache for subsequent scripts
+  echo "{\"user\": \"${AUTH_USER}\", \"org_id\": \"${ORG_ID}\"}" > "${REPORT_DIR}/_auth_cache.json"
 }

@@ -14,10 +14,14 @@ validate_auth
 echo ""
 echo ">> Scanning org workflows for custom secret references..."
 
+# Check rate limit before starting heavy work
+REMAINING="$(check_rate_limit)"
+echo "   API calls remaining: ${REMAINING}"
+
 # Use code search API to find workflows referencing secrets
 SEARCH_RESULTS="[]"
 SEARCH_PAGE=1
-SEARCH_MAX_PAGES=10
+SEARCH_MAX_PAGES=5
 
 while [[ $SEARCH_PAGE -le $SEARCH_MAX_PAGES ]]; do
   SEARCH_RESPONSE="$(gh_rest GET "/search/code?q=secrets.+org:${ORG_NAME}+path:.github/workflows+language:yaml&per_page=100&page=${SEARCH_PAGE}" 2>/dev/null || echo '{"items":[]}')"
@@ -31,7 +35,7 @@ while [[ $SEARCH_PAGE -le $SEARCH_MAX_PAGES ]]; do
 
   SEARCH_RESULTS="$(echo "${SEARCH_RESULTS}" "${SEARCH_BATCH}" | jq -s '.[0] + .[1]')"
   SEARCH_PAGE=$((SEARCH_PAGE + 1))
-  sleep 2
+  sleep 3
 
   if [[ "${BATCH_COUNT}" -lt 100 ]]; then
     break
@@ -47,7 +51,7 @@ echo "   Found ${UNIQUE_FILE_COUNT} workflow files referencing secrets"
 rm -f "${REPORT_DIR}/_wf_tmp.jsonl"
 PROCESSED=0
 
-echo "${UNIQUE_FILES}" | jq -c '.[0:200] | .[]' 2>/dev/null | while IFS= read -r file_info; do
+echo "${UNIQUE_FILES}" | jq -c '.[0:100] | .[]' 2>/dev/null | while IFS= read -r file_info; do
   REPO_FULL="$(echo "${file_info}" | jq -r '.repo')"
   FILE_PATH="$(echo "${file_info}" | jq -r '.path')"
 
@@ -69,8 +73,8 @@ echo "${UNIQUE_FILES}" | jq -c '.[0:200] | .[]' 2>/dev/null | while IFS= read -r
   fi
 
   PROCESSED=$((PROCESSED + 1))
-  if [[ $((PROCESSED % 10)) -eq 0 ]]; then
-    sleep 1
+  if [[ $((PROCESSED % 5)) -eq 0 ]]; then
+    sleep 2
   fi
 done
 

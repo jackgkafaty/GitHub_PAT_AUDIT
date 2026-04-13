@@ -41,7 +41,7 @@ echo "${PAT_AUDIT_EVENTS}" | jq '.' > "${REPORT_DIR}/audit_pat_events.json"
 echo ""
 echo ">> Querying audit log for token-based access events..."
 
-TOKEN_ACCESS_EVENTS="$(gh_rest_paginated "/orgs/${ORG_NAME}/audit-log?phrase=created:>=${LOOKBACK_DATE}&include=all" 100 2>/dev/null || echo "[]")"
+TOKEN_ACCESS_EVENTS="$(gh_rest_paginated "/orgs/${ORG_NAME}/audit-log?phrase=created:>=${LOOKBACK_DATE}&include=all" 100 10 2>/dev/null || echo "[]")"
 
 TOKEN_AUTH_EVENTS="$(echo "${TOKEN_ACCESS_EVENTS}" | jq '[.[] | select(
   .programmatic_access_type != null or
