@@ -1,5 +1,5 @@
 name: 'GitHub PAT Audit'
-description: 'Audit Personal Access Token usage across a GitHub organization. Scans SAML SSO credentials, audit logs, and workflow files for token activity. Only reports users with PAT activity.'
+description: 'Audit PAT usage across a GitHub org via SAML SSO, audit logs, and workflow secret scanning.'
 author: 'jackgkafaty'
 
 branding:
