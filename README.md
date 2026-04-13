@@ -192,7 +192,7 @@ The audit script uses the following environment variables:
 This repository already includes a workflow at `.github/workflows/pat-audit.yml`. It:
 
 - Runs weekly on Mondays at 08:00 UTC (and supports `workflow_dispatch` with optional org name and lookback overrides).
-- Reads the PAT from `secrets.ORG_LEVEL_PAT` and the org name from `vars.GITHUB_ORG_NAME`.
+- Reads the PAT from `secrets.ORG_LEVEL_PAT` and the org name from `vars.GITHUB_ORG_NAME` (falls back to `github.repository_owner` automatically).
 - Uploads the `reports/` directory as an artifact retained for 90 days.
 
 ```yaml
@@ -226,7 +226,7 @@ jobs:
       - name: Run PAT Audit Script
         env:
           ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME }}
+          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
         run: |
           chmod +x ./scripts/pat-audit.sh

@@ -33,7 +33,7 @@ jobs:
       - name: Run PAT Audit Script
         env:
           ORG_PAT: ${{ secrets.ORG_LEVEL_PAT }}
-          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME }}
+          ORG_NAME: ${{ inputs.org_name || vars.GITHUB_ORG_NAME || github.repository_owner }}
           LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
         run: |
           chmod +x ./scripts/pat-audit.sh
