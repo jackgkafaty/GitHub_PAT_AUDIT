@@ -498,6 +498,170 @@ echo "============================================"
 echo "  Report generated: ${REPORT_FILE}"
 echo "  Data files in: ${REPORT_DIR}/"
 echo "============================================"
+
+# =============================================================================
+# SECTION 9: GitHub Actions Job Summary (rendered in the Actions UI)
+# =============================================================================
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  echo ""
+  echo ">> Step 9: Writing GitHub Actions Job Summary..."
+
+  SUMMARY="${GITHUB_STEP_SUMMARY}"
+
+  cat >> "${SUMMARY}" << SUMMARY_HEADER
+# 🔐 PAT Audit Report — \`${ORG_NAME}\`
+
+| | |
+|---|---|
+| **Organization** | \`${ORG_NAME}\` |
+| **Run Date** | ${TIMESTAMP} |
+| **Authenticated As** | \`${AUTH_USER}\` |
+| **Lookback Period** | ${LOOKBACK_DAYS} days (since ${LOOKBACK_DATE}) |
+
+---
+
+## 📊 Overview
+
+| Metric | Count |
+|:-------|------:|
+| Total Repositories | **${REPO_COUNT}** |
+| Total Members | **${MEMBER_COUNT}** |
+| SAML SSO Authorized PATs | **${PAT_CRED_COUNT}** |
+| SAML SSO Authorized SSH Keys | **${SSH_CRED_COUNT}** |
+| PAT Lifecycle Audit Events | **${PAT_AUDIT_COUNT}** |
+| Token Auth Audit Events | **${TOKEN_AUTH_COUNT}** |
+| Unique Actors in Audit Log | **${ACTOR_COUNT}** |
+
+---
+
+## 🔑 SAML SSO Authorized Tokens
+
+Tokens authorized for SAML SSO access. Shows the token owner, identifier, scopes granted, and when it was last used.
+
+SUMMARY_HEADER
+
+  if [[ "${PAT_CRED_COUNT}" -gt 0 ]]; then
+    echo "| User | Token (last 8) | Scopes | Authorized | Last Accessed | Expires |" >> "${SUMMARY}"
+    echo "|:-----|:--------------:|:-------|:-----------|:--------------|:--------|" >> "${SUMMARY}"
+    echo "${PAT_CREDS}" | jq -r '.[] | "| `\(.login)` | `\(.token_last_eight)` | \(.scopes | join(", ")) | \(.credential_authorized_at // "—") | \(.credential_accessed_at // "Never") | \(.authorized_credential_expires_at // "Never") |"' >> "${SUMMARY}" 2>/dev/null || true
+  else
+    cat >> "${SUMMARY}" << 'NO_SAML'
+> **No SAML SSO authorized PATs found.**
+> This is expected if the organization does not enforce SAML SSO.
+> Without SAML, classic PATs cannot be enumerated via API — see the audit log tables below.
+NO_SAML
+  fi
+
+  cat >> "${SUMMARY}" << 'PAT_EVENTS_HEADER'
+
+---
+
+## 📋 PAT Lifecycle Events
+
+Token creation, approval, denial, and revocation events from the org audit log.
+
+PAT_EVENTS_HEADER
+
+  if [[ "${PAT_AUDIT_COUNT}" -gt 0 ]]; then
+    echo "| Date | Event | Actor | Target User | Repository |" >> "${SUMMARY}"
+    echo "|:-----|:------|:------|:------------|:-----------|" >> "${SUMMARY}"
+    echo "${PAT_AUDIT_EVENTS}" | jq -r '.[0:50] | .[] |
+      "| \(."@timestamp" // .created_at | if type == "number" then . / 1000 | todate else . end) | `\(.action | split(".") | last)` | `\(.actor // "N/A")` | `\(.user // "—")` | \(.repo // "—") |"
+    ' >> "${SUMMARY}" 2>/dev/null || true
+    if [[ "${PAT_AUDIT_COUNT}" -gt 50 ]]; then
+      echo "" >> "${SUMMARY}"
+      echo "_Showing 50 of ${PAT_AUDIT_COUNT} events. Download the artifact for the full list._" >> "${SUMMARY}"
+    fi
+  else
+    echo "> _No PAT lifecycle events found in the last ${LOOKBACK_DAYS} days._" >> "${SUMMARY}"
+  fi
+
+  cat >> "${SUMMARY}" << 'TOKEN_AUTH_HEADER'
+
+---
+
+## 🤖 Token-Authenticated Access
+
+API calls made using a PAT or by a bot/app, showing who used which token type against which repository.
+
+TOKEN_AUTH_HEADER
+
+  if [[ "${TOKEN_AUTH_COUNT}" -gt 0 ]]; then
+    echo "| Date | Action | User | Repository | Token Type |" >> "${SUMMARY}"
+    echo "|:-----|:-------|:-----|:-----------|:-----------|" >> "${SUMMARY}"
+    echo "${TOKEN_AUTH_EVENTS}" | jq -r '.[0:50] | .[] |
+      "| \(."@timestamp" // .created_at | if type == "number" then . / 1000 | todate else . end) | `\(.action)` | `\(.actor // "N/A")` | \(.repo // "—") | \(.programmatic_access_type // "classic PAT") |"
+    ' >> "${SUMMARY}" 2>/dev/null || true
+    if [[ "${TOKEN_AUTH_COUNT}" -gt 50 ]]; then
+      echo "" >> "${SUMMARY}"
+      echo "_Showing 50 of ${TOKEN_AUTH_COUNT} events. Download the artifact for the full list._" >> "${SUMMARY}"
+    fi
+  else
+    echo "> _No token-authenticated access events found in the last ${LOOKBACK_DAYS} days._" >> "${SUMMARY}"
+  fi
+
+  cat >> "${SUMMARY}" << 'ACTOR_HEADER'
+
+---
+
+## 👤 Actor Summary
+
+Users and bots observed making API calls, ranked by activity. Highlights programmatic access and bot accounts.
+
+ACTOR_HEADER
+
+  if [[ "${ACTOR_COUNT}" -gt 0 ]]; then
+    echo "| User | Total Events | Bot? | Token Access? | First Seen | Last Seen | Repos Accessed |" >> "${SUMMARY}"
+    echo "|:-----|-------------:|:----:|:-------------:|:-----------|:----------|---------------:|" >> "${SUMMARY}"
+    echo "${ACTOR_SUMMARY}" | jq -r '.[] |
+      "| `\(.actor)` | \(.total_events) | \(if .is_bot then "✅" else "—" end) | \(if .has_programmatic_access then "✅" else "—" end) | \(.first_seen) | \(.last_seen) | \(.repos_accessed | length) |"
+    ' >> "${SUMMARY}" 2>/dev/null || true
+  else
+    echo "> _No actors found in audit log for this period._" >> "${SUMMARY}"
+  fi
+
+  cat >> "${SUMMARY}" << 'MEMBERS_HEADER'
+
+---
+
+## 👥 Organization Members
+
+MEMBERS_HEADER
+
+  echo "| User | Name | Role | Account Created |" >> "${SUMMARY}"
+  echo "|:-----|:-----|:-----|:----------------|" >> "${SUMMARY}"
+  echo "${ALL_MEMBERS}" | jq -r '.[] |
+    "| `\(.login)` | \(.name // "—") | \(.role // "—") | \(.createdAt // "—") |"
+  ' >> "${SUMMARY}" 2>/dev/null || true
+
+  cat >> "${SUMMARY}" << 'REPOS_HEADER'
+
+---
+
+## 📦 Repository Inventory
+
+REPOS_HEADER
+
+  echo "| Repository | Visibility | Archived | Last Push |" >> "${SUMMARY}"
+  echo "|:-----------|:-----------|:--------:|:----------|" >> "${SUMMARY}"
+  echo "${ALL_REPOS}" | jq -r '.[0:100] | .[] |
+    "| `\(.nameWithOwner)` | \(if .isPrivate then "🔒 Private" else "🌐 Public" end) | \(if .isArchived then "📁 Yes" else "—" end) | \(.pushedAt // "Never") |"
+  ' >> "${SUMMARY}" 2>/dev/null || true
+
+  if [[ "${REPO_COUNT}" -gt 100 ]]; then
+    echo "" >> "${SUMMARY}"
+    echo "_Showing 100 of ${REPO_COUNT} repositories. Download the artifact for the full list._" >> "${SUMMARY}"
+  fi
+
+  cat >> "${SUMMARY}" << 'SUMMARY_FOOTER'
+
+---
+
+> 📎 **Full data available in the workflow artifact** — download the `pat-audit-report` artifact for complete JSON data files and the detailed Markdown report.
+SUMMARY_FOOTER
+
+  echo "   Job summary written to GITHUB_STEP_SUMMARY"
+fi
 echo ""
 echo ">> Files produced:"
 ls -la "${REPORT_DIR}/"
